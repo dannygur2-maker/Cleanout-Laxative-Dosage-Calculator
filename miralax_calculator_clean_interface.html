@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Miralax Dosage Calculator for Cleanout</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root{
+      --bg:#f6fbff; --card:#ffffff; --accent:#0b6b88; --accent-2:#2a8fb0; --muted:#5a6b73;
+      --soft:#eaf6fb;
+    }
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial; background:var(--bg); color:#123; margin:0; padding:24px; display:flex; justify-content:center;}
+    .container { width:100%; max-width:760px; }
+    header { text-align:left; margin-bottom:14px; }
+    h1 { margin:6px 0; color:var(--accent); font-size:24px; }
+    p.lead { margin:0; color:var(--muted); }
+    .card { background:var(--card); border-radius:12px; padding:18px; box-shadow:0 8px 22px rgba(12,24,34,0.06); }
+    label { display:block; margin-top:12px; font-weight:600; color:#234; }
+    .row { display:flex; gap:12px; }
+    .col { flex:1; }
+    input[type="number"], select { width:100%; padding:10px 12px; margin-top:6px; border-radius:10px; border:1px solid #d7e6eb; font-size:15px; background:linear-gradient(180deg,#fff,#fbfdff); }
+    .small { font-size:13px; color:var(--muted); margin-top:6px; }
+    .inline { display:inline-block; vertical-align:middle; }
+    .feet-inches { display:flex; gap:8px; }
+    .feet-inches input { width:70px; }
+    button { margin-top:16px; width:100%; background:linear-gradient(180deg,var(--accent),var(--accent-2)); color:white; border:none; padding:12px; font-size:16px; border-radius:10px; cursor:pointer; box-shadow:0 6px 14px rgba(12,88,110,0.18); }
+    button:active{ transform:translateY(1px); }
+    .out { margin-top:14px; padding:14px; border-radius:10px; background:var(--soft); color:var(--accent); font-size:18px; text-align:center; }
+    footer { margin-top:12px; text-align:center; color:var(--muted); font-size:13px; }
+    .muted { color:var(--muted); font-size:13px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Miralax Dosage Calculator for Cleanout</h1>
+      <p class="lead">Enter gender, age, height (feet & inches), and weight (pounds). The calculator uses CDC BMI-for-age data to adjust dosage.</p>
+    </header>
+
+    <div class="card">
+      <label for="sex">Sex</label>
+      <select id="sex"><option value="1">Male</option><option value="2">Female</option></select>
+
+      <div class="row" style="margin-top:8px;">
+        <div class="col">
+          <label for="ageYears">Age — years</label>
+          <input id="ageYears" type="number" min="0" step="1" value="8">
+        </div>
+        <div class="col">
+          <label for="ageMonths">Additional months (0–11)</label>
+          <input id="ageMonths" type="number" min="0" max="11" step="1" value="0">
+        </div>
+      </div>
+
+      <label style="margin-top:12px;">Height (feet & inches)</label>
+      <div class="feet-inches">
+        <input id="heightFeet" type="number" min="0" step="1" placeholder="ft" value="4">
+        <input id="heightInches" type="number" min="0" max="11" step="1" placeholder="in" value="0">
+      </div>
+
+      <label for="weight" style="margin-top:12px;">Weight (pounds)</label>
+      <input id="weight" type="number" min="0" step="0.1" value="40">
+
+      
+
+      <button id="calcBtn">Calculate Dosage</button>
+
+      <div id="output" class="out" style="display:none;"></div>
+    </div>
+
+    <footer>
+      </footer>
+  </div>
+
+<script>
+/* Simple CSV parser and helpers */
+function parseCSV(text) {
+  const lines = text.trim().split(/\r?\n/);
+  const header = lines.shift().split(',').map(h => h.trim());
+  return lines.map(line => {
+    const parts = line.split(',').map(p => p.trim());
+    const obj = {};
+    header.forEach((h,i)=> obj[h]= parts[i]!==undefined?parts[i]:"");
+    return obj;
+  });
+}
+function lerp(x,x0,y0,x1,y1){ if(x1===x0) return y0; return y0 + (y1-y0)*((x-x0)/(x1-x0)); }
+function normCdf(x) {
+  var a1 =  0.254829592;
+  var a2 = -0.284496736;
+  var a3 =  1.421413741;
+  var a4 = -1.453152027;
+  var a5 =  1.061405429;
+  var p  =  0.3275911;
+
+  var sign = 1;
+  if (x < 0) sign = -1;
+  x = Math.abs(x) / Math.sqrt(2.0);
+
+  var t = 1.0 / (1.0 + p * x);
+  var y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x);
+
+  var erf = sign * y;
+  return 0.5 * (1 + erf);
+}
+
+/* Attempt to load CDC CSV remotely, fallback to local file if present */
+const CDC_CSV_URL = "https://www.cdc.gov/growthcharts/data/extended-bmi/bmi-age-2022.csv";
+let lmsTable = null;
+
+async function loadCsv() {
+  // try remote fetch
+  try {
+    const r = await fetch(CDC_CSV_URL);
+    if (!r.ok) throw new Error("Remote fetch failed");
+    const txt = await r.text();
+    lmsTable = parseCSV(txt).map(r=>({ sex:+r.sex, agemos: +r.agemos, L: parseFloat(r.L), M: parseFloat(r.M), S: parseFloat(r.S), P95: parseFloat(r.P95), sigma: r.sigma?parseFloat(r.sigma):NaN }));
+    console.info("Loaded remote CDC CSV");
+    return;
+  } catch(e) {
+    console.warn("Remote fetch failed, attempting local file.", e);
+  }
+  // try local
+  try {
+    const r2 = await fetch("bmi-age-2022.csv");
+    if (!r2.ok) throw new Error("Local fetch failed");
+    const txt2 = await r2.text();
+    lmsTable = parseCSV(txt2).map(r=>({ sex:+r.sex, agemos: +r.agemos, L: parseFloat(r.L), M: parseFloat(r.M), S: parseFloat(r.S), P95: parseFloat(r.P95), sigma: r.sigma?parseFloat(r.sigma):NaN }));
+    console.info("Loaded local CSV");
+    return;
+  } catch(e) {
+    console.warn("Local CSV load failed", e);
+  }
+  lmsTable = null;
+}
+
+/* BMI percentile calculation */
+function bmiPercentile(sex, ageMonths, bmi) {
+  if (!lmsTable) throw new Error("LMS data not loaded");
+  const rows = lmsTable.filter(r=>r.sex===+sex);
+  const agemosArr = [...new Set(rows.map(r=>r.agemos))].sort((a,b)=>a-b);
+  const minA = agemosArr[0], maxA = agemosArr[agemosArr.length-1];
+  const age = Math.max(minA, Math.min(maxA, ageMonths));
+  let lower = agemosArr[0], upper = agemosArr[agemosArr.length-1];
+  for(let i=0;i<agemosArr.length;i++){
+    if (agemosArr[i] <= age) lower = agemosArr[i];
+    if (agemosArr[i] >= age) { upper = agemosArr[i]; break; }
+  }
+  const rowLower = rows.find(r=>r.agemos===lower);
+  const rowUpper = rows.find(r=>r.agemos===upper);
+  const L = (lower===upper)? rowLower.L : lerp(age, lower, rowLower.L, upper, rowUpper.L);
+  const M = (lower===upper)? rowLower.M : lerp(age, lower, rowLower.M, upper, rowUpper.M);
+  const S = (lower===upper)? rowLower.S : lerp(age, lower, rowLower.S, upper, rowUpper.S);
+  const P95 = (lower===upper)? rowLower.P95 : lerp(age, lower, rowLower.P95, upper, rowUpper.P95);
+  let sigma = NaN;
+  if (!isNaN(rowLower.sigma) && !isNaN(rowUpper.sigma)) sigma = (lower===upper)?rowLower.sigma:lerp(age, lower, rowLower.sigma, upper, rowUpper.sigma);
+  else {
+    const ageYears = age/12;
+    if (sex===2) sigma = 0.8334 + 0.3712*ageYears - 0.0011*ageYears*ageYears;
+    else sigma = 0.3728 + 0.5196*ageYears - 0.0091*ageYears*ageYears;
+  }
+  if (bmi <= P95) {
+    const z = (Math.pow(bmi/M, L) - 1) / (L*S);
+    const pct = normCdf(z) * 100;
+    return {percentile: pct, method:"LMS", zscore: z};
+  } else {
+    const inner = (bmi - P95) / sigma;
+    const pct = 90 + 10 * normCdf(inner);
+    return {percentile: pct, method:"extended", zscore: null};
+  }
+}
+
+/* Dosage rules */
+function calculateDosage(ageYearsDecimal, percentile) {
+  let base = 7 + (ageYearsDecimal - 5) * 0.75;
+  let caps = base;
+  if (percentile <= 25) caps -= 1;
+  else if (percentile >= 75) caps += 1;
+  if (ageYearsDecimal >= 13 && caps > 14) caps = 14;
+  if (caps > 30) caps = 30;
+  if (caps < 0) caps = 0;
+  return Math.round(caps * 100) / 100;
+}
+
+/* UI handling */
+document.getElementById('calcBtn').addEventListener('click', async () => {
+  const out = document.getElementById('output');
+  out.style.display = 'block';
+  out.textContent = 'Loading data & calculating...';
+  if (!lmsTable) {
+    await loadCsv();
+  }
+
+  const sex = +document.getElementById('sex').value;
+  const ageY = +document.getElementById('ageYears').value;
+  const ageM = +document.getElementById('ageMonths').value;
+  const ageMonthsTotal = ageY * 12 + ageM;
+  const ageYearsDecimal = ageMonthsTotal / 12;
+
+  const feet = +document.getElementById('heightFeet').value;
+  const inches = +document.getElementById('heightInches').value;
+  const weightLb = +document.getElementById('weight').value;
+
+  if (isNaN(ageY) || isNaN(ageM) || isNaN(feet) || isNaN(inches) || isNaN(weightLb)) {
+    out.textContent = 'Please enter valid numbers for all fields.';
+    return;
+  }
+
+  const totalInches = feet * 12 + inches;
+  const heightM = totalInches * 0.0254;
+  const weightKg = weightLb * 0.45359237;
+  const bmi = weightKg / (heightM * heightM);
+
+  if (!lmsTable) {
+    out.textContent = `BMI: ${bmi.toFixed(2)} kg/m². Unable to compute CDC percentile because the dataset could not be loaded. Please download 'bmi-age-2022.csv' from CDC and place it beside this file.`;
+    return;
+  }
+
+  try {
+    const res = bmiPercentile(sex, ageMonthsTotal + 0.5, bmi);
+    const pct = res.percentile;
+    const dosage = calculateDosage(ageYearsDecimal, pct);
+    out.textContent = `${dosage.toFixed(2)} caps`;
+  } catch(e) {
+    console.error(e);
+    out.textContent = 'Error computing percentile: ' + e;
+  }
+});
+
+/* attempt pre-load */
+loadCsv().catch(()=>{/* ignore */});
+</script>
+</body>
+</html>
